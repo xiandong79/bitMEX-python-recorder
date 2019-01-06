@@ -6,8 +6,32 @@ import json
 import logging
 import urllib
 import math
+import datetime
+import pathlib
 from util.api_key import generate_nonce, generate_signature
+from logging.handlers import TimedRotatingFileHandler
 
+
+def setup_logger(symbol):
+    date_string = datetime.datetime.now().strftime("%Y%m%d")  # %H:%M:%S"
+    # save logger info to files
+    logger = logging.getLogger()
+    # Change this to DEBUG if you want a lot more info
+    logger.setLevel(logging.INFO)
+    # add by xiandong
+    pathlib.Path('hft_data' + '/' + date_string + '/' +
+                 symbol).mkdir(parents=True, exist_ok=True)
+    logFilePath = 'hft_data' + '/' + date_string + '/' + symbol + '/log'
+    handler = TimedRotatingFileHandler(logFilePath, when="M", interval=1)
+    # “M”: Minutes “H”: Hours “D”: Days
+    logger.addHandler(handler)
+    return logger
+
+
+def format_data(data):
+    item_string = [', '.join(map(str, item.values())) for item in data]
+    return item_string
+    # return data
 
 # Naive implementation of connecting to BitMEX websocket for streaming realtime data.
 # The Marketmaker still interacts with this as if it were a REST Endpoint, but now it can get
@@ -17,6 +41,8 @@ from util.api_key import generate_nonce, generate_signature
 # On connect, it synchronously asks for a push of all this data then returns.
 # Right after, the MM can start using its data. It will be updated in realtime, so the MM can
 # poll really often if it wants.
+
+
 class BitMEXWebsocket:
 
     # Don't grow a table larger than this amount. Helps cap memory usage.
@@ -24,8 +50,8 @@ class BitMEXWebsocket:
 
     def __init__(self, endpoint, symbol, api_key=None, api_secret=None):
         '''Connect to the websocket and initialize data stores.'''
-        self.logger = logging.getLogger(__name__)
-        self.logger.debug("Initializing WebSocket.")
+        self.logger = setup_logger(symbol)
+        # self.logger.debug("Initializing WebSocket.")
 
         self.endpoint = endpoint
         self.symbol = symbol
@@ -90,7 +116,7 @@ class BitMEXWebsocket:
     def market_depth(self):
         '''Get market depth (orderbook). Returns all levels.'''
         # {'symbol': 'XBTUSD', 'id': 15500000000, 'side': 'Sell', 'size': 1, 'price': 1000000}
-        return [list(item.values()) for item in self.data['orderBookL2_25']]
+        return [list(item.values()) for item in self.data['orderBook10']]
 
     def open_orders(self, clOrdIDPrefix):
         '''Get all your open orders.'''
@@ -121,7 +147,7 @@ class BitMEXWebsocket:
         self.wst = threading.Thread(target=lambda: self.ws.run_forever())
         self.wst.daemon = True
         self.wst.start()
-        self.logger.debug("Started thread")
+        # self.logger.debug("Started thread")
 
         # Wait for connect before continuing
         conn_timeout = 5
@@ -158,12 +184,10 @@ class BitMEXWebsocket:
         Most subscription topics are scoped by the symbol we're listening to.
         '''
 
-        # You can sub to orderBookL2_25 for all levels, or orderBook10 for top 10 levels & save bandwidth
-        # symbolSubs = ["execution", "instrument", "order", "orderBookL2_25", "position", "quote", "trade"]
-        # # 根据 code test 需求，修改如下: (奇怪的是有些不能被删除，原因是被其他地方用到)
-        # todo: 但是 orderBookL2_25_25 一定要加上
+        # You can sub to orderBook10 for all levels, or orderBook10 for top 10 levels & save bandwidth
+        # symbolSubs = ["execution", "instrument", "order", "orderBook10", "position", "quote", "trade"]
         symbolSubs = ["instrument", "order",
-                      "orderBookL2_25", "position", "quote", "trade"]
+                      "orderBook10", "position", "quote", "trade"]
         genericSubs = ["margin"]
 
         subscriptions = [sub + ':' + self.symbol for sub in symbolSubs]
@@ -177,7 +201,7 @@ class BitMEXWebsocket:
     def __wait_for_account(self):
         '''On subscribe, this data will come down. Wait for it.'''
         # Wait for the keys to show up from the ws
-        while not {'margin', 'position', 'order', 'orderBookL2_25'} <= set(self.data):
+        while not {'margin', 'position', 'order', 'orderBook10'} <= set(self.data):
             sleep(0.1)
 
     def __wait_for_symbol(self, symbol):
@@ -194,63 +218,61 @@ class BitMEXWebsocket:
     def __on_message(self, message):
         '''Handler for parsing WS messages.'''
         message = json.loads(message)
-        self.logger.debug(json.dumps(message))
+        # self.logger.debug(json.dumps(message))
 
         table = message['table'] if 'table' in message else None
         action = message['action'] if 'action' in message else None
         try:
-            if 'subscribe' in message:
-                self.logger.debug("Subscribed to %s." % message['subscribe'])
-            elif action:
+            if table in ['trade', 'orderBook10']:
+                # add by xiandong as we only record 'trade', 'orderBook10' currently.
+                if 'subscribe' in message:
+                    self.logger.debug("Subscribed to %s." %
+                                      message['subscribe'])
+                elif action:
 
-                if table not in self.data:
-                    self.data[table] = []
+                    if table not in self.data:
+                        self.data[table] = []
 
-                # There are four possible actions from the WS:
-                # 'partial' - full table image
-                # 'insert'  - new row
-                # 'update'  - update row
-                # 'delete'  - delete row
-                if action == 'partial':
-                    self.logger.debug("%s: partial" % table)
-                    self.data[table] += message['data']
-                    # Keys are communicated on partials to let you know how to uniquely identify
-                    # an item. We use it for updates.
-                    self.keys[table] = message['keys']
-                elif action == 'insert':
-                    self.logger.debug('%s: inserting %s' %
-                                      (table, message['data']))
-                    self.data[table] += message['data']
+                    # There are four possible actions from the WS:
+                    # 'partial' - full table image
+                    # 'insert'  - new row
+                    # 'update'  - update row
+                    # 'delete'  - delete row
+                    if action == 'partial':
+                        self.logger.info("{}_partial {}".format(
+                            table, format_data(message['data'])))
+                        self.data[table] += message['data']
+                        # Keys are communicated on partials to let you know how to uniquely identify
+                        # an item. We use it for updates.
+                        self.keys[table] = message['keys']
+                    elif action == 'insert':
+                        self.logger.info("{}_inserting {}".format(
+                            table, format_data(message['data'])))
+                        self.data[table] += message['data']
 
-                    # Limit the max length of the table to avoid excessive memory usage.
-                    # Don't trim orders because we'll lose valuable state if we do.
-                    if table not in ['order', 'orderBookL2_25'] and len(self.data[table]) > BitMEXWebsocket.MAX_TABLE_LEN:
-                        self.data[table] = self.data[table][int(
-                            BitMEXWebsocket.MAX_TABLE_LEN / 2):]
-
-                elif action == 'update':
-                    self.logger.debug('%s: updating %s' %
-                                      (table, message['data']))
-                    # Locate the item in the collection and update it.
-                    for updateData in message['data']:
-                        item = findItemByKeys(
-                            self.keys[table], self.data[table], updateData)
-                        if not item:
-                            return  # No item found to update. Could happen before push
-                        item.update(updateData)
-                        # Remove cancelled / filled orders
-                        if table == 'order' and item['leavesQty'] <= 0:
+                    elif action == 'update':
+                        self.logger.info("{}_updating {}".format(
+                            table, format_data(message['data'])))
+                        # Locate the item in the collection and update it.
+                        for updateData in message['data']:
+                            item = findItemByKeys(
+                                self.keys[table], self.data[table], updateData)
+                            if not item:
+                                return  # No item found to update. Could happen before push
+                            item.update(updateData)
+                            # Remove cancelled / filled orders
+                            if table == 'order' and item['leavesQty'] <= 0:
+                                self.data[table].remove(item)
+                    elif action == 'delete':
+                        self.logger.info("{}_deleting {}".format(
+                            table, format_data(message['data'])))
+                        # Locate the item in the collection and remove it.
+                        for deleteData in message['data']:
+                            item = findItemByKeys(
+                                self.keys[table], self.data[table], deleteData)
                             self.data[table].remove(item)
-                elif action == 'delete':
-                    self.logger.debug('%s: deleting %s' %
-                                      (table, message['data']))
-                    # Locate the item in the collection and remove it.
-                    for deleteData in message['data']:
-                        item = findItemByKeys(
-                            self.keys[table], self.data[table], deleteData)
-                        self.data[table].remove(item)
-                else:
-                    raise Exception("Unknown action: %s" % action)
+                    else:
+                        raise Exception("Unknown action: %s" % action)
         except:
             self.logger.error(traceback.format_exc())
 

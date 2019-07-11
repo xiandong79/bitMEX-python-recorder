@@ -2,6 +2,11 @@
 
 In short, I record the ticker data (orderbook, trades) directly using **logging module** of python. Then, **compress** the log files and delete the originals **periodically**. In detail, for each ticker/pair, 24 files which include the ticker data of 24 hours are recorded in the folder named with ticker name. Then, the corn jobs will start to collect data and compress the data every day.
 
+## 0. Notice:
+According to the [bitmex user group in Github](https://github.com/BitMEX/api-connectors/issues/139), the market data from the websocket API of bitmex.com would keep away from live/real market data with time goes on. 
+
+So, you can add a **cornjob** for your script which **stops/kills** the script and **restarts** it periodically.
+
 ## 1. Explination:
 
 ### 1.1 Why Adopt .gz files
